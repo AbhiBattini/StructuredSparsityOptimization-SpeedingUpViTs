@@ -1,7 +1,7 @@
-"""PyTorch semi-structured 2:4 sparse baseline skeleton.
+"""Run Week 3 PyTorch semi-structured sparse benchmark path.
 
-This script is intentionally lightweight and checks whether the runtime supports
-PyTorch's semi-structured sparse APIs before benchmarking.
+Example:
+  python baselines/pytorch_semistructured.py --batch-sizes 1 8 32 128 --dtype float16
 """
 
 from __future__ import annotations
@@ -10,30 +10,25 @@ import argparse
 
 import torch
 
+from benchmarks.bench_sparse import main as bench_sparse_main
+
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Check semi-structured sparse support in current PyTorch runtime")
-    parser.parse_args()
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--check-only", action="store_true", help="Only validate API/runtime support")
+    args, _ = parser.parse_known_args()
 
-    cuda_ok = torch.cuda.is_available()
-    print(f"CUDA available: {cuda_ok}")
+    if args.check_only:
+        print(f"CUDA available: {torch.cuda.is_available()}")
+        try:
+            from torch.sparse import to_sparse_semi_structured  # noqa: F401
 
-    try:
-        from torch.sparse import to_sparse_semi_structured  # type: ignore
+            print("Found torch.sparse.to_sparse_semi_structured")
+        except Exception as exc:
+            print(f"Semi-structured APIs unavailable: {exc}")
+        return
 
-        print("Found torch.sparse.to_sparse_semi_structured")
-        x = torch.randn(128, 128, device="cuda" if cuda_ok else "cpu", dtype=torch.float16 if cuda_ok else torch.float32)
-        if x.shape[1] % 4 == 0:
-            try:
-                sx = to_sparse_semi_structured(x)
-                print(f"Semi-structured tensor conversion succeeded: {type(sx)}")
-            except Exception as exc:  # pragma: no cover
-                print(f"Semi-structured conversion failed in this env: {exc}")
-        else:
-            print("Skipping conversion test: non-4-aligned shape")
-    except Exception as exc:  # pragma: no cover
-        print("Semi-structured APIs unavailable in this PyTorch build.")
-        print(f"Details: {exc}")
+    bench_sparse_main()
 
 
 if __name__ == "__main__":
