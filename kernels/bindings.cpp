@@ -6,10 +6,16 @@ at::Tensor naive_sparse_linear_cuda(
     const at::Tensor& indices,
     c10::optional<at::Tensor> bias);
 
+at::Tensor optimized_sparse_linear_cuda(
+    const at::Tensor& input,
+    const at::Tensor& values,
+    const at::Tensor& indices,
+    c10::optional<at::Tensor> bias);
+
 #define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 
-at::Tensor naive_sparse_linear(
+static void validate_inputs(
     const at::Tensor& input,
     const at::Tensor& values,
     const at::Tensor& indices,
@@ -24,6 +30,7 @@ at::Tensor naive_sparse_linear(
     CHECK_CUDA(bias.value());
     CHECK_CONTIGUOUS(bias.value());
   }
+
   TORCH_CHECK(input.dim() == 2, "input must be 2D [M, K]");
   TORCH_CHECK(values.dim() == 3, "values must be 3D [N, G, 2]");
   TORCH_CHECK(indices.dim() == 3, "indices must be 3D [N, G, 2]");
@@ -34,10 +41,27 @@ at::Tensor naive_sparse_linear(
   TORCH_CHECK(indices.size(1) == k / 4, "indices G dimension must match K/4");
   TORCH_CHECK(values.size(2) == 2, "values last dim must be 2");
   TORCH_CHECK(indices.size(2) == 2, "indices last dim must be 2");
+}
 
+at::Tensor naive_sparse_linear(
+    const at::Tensor& input,
+    const at::Tensor& values,
+    const at::Tensor& indices,
+    c10::optional<at::Tensor> bias) {
+  validate_inputs(input, values, indices, bias);
   return naive_sparse_linear_cuda(input, values, indices, bias);
+}
+
+at::Tensor optimized_sparse_linear(
+    const at::Tensor& input,
+    const at::Tensor& values,
+    const at::Tensor& indices,
+    c10::optional<at::Tensor> bias) {
+  validate_inputs(input, values, indices, bias);
+  return optimized_sparse_linear_cuda(input, values, indices, bias);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("naive_sparse_linear", &naive_sparse_linear, "Naive 2:4 sparse linear forward (CUDA)");
+  m.def("optimized_sparse_linear", &optimized_sparse_linear, "Optimized 2:4 sparse linear forward (CUDA)");
 }

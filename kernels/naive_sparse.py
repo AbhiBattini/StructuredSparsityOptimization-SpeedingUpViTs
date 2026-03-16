@@ -1,4 +1,4 @@
-"""Python helpers for the naive CUDA 2:4 sparse linear kernel."""
+"""Python helpers for custom CUDA 2:4 sparse linear kernels."""
 
 from __future__ import annotations
 
@@ -24,11 +24,15 @@ def load_extension(verbose: bool = False):
     from torch.utils.cpp_extension import load
 
     return load(
-        name="naive_sparse_ext",
-        sources=[str(ROOT / "bindings.cpp"), str(ROOT / "naive_sparse_matmul.cu")],
+        name="sparse_ext",
+        sources=[
+            str(ROOT / "bindings.cpp"),
+            str(ROOT / "naive_sparse_matmul.cu"),
+            str(ROOT / "optimized_sparse_matmul.cu"),
+        ],
         verbose=verbose,
-        extra_cuda_cflags=["-O2"],
-        extra_cflags=["-O2"],
+        extra_cuda_cflags=["-O3", "--use_fast_math"],
+        extra_cflags=["-O3"],
     )
 
 
@@ -46,34 +50,37 @@ def pack_2to4(weight: torch.Tensor, bias: torch.Tensor | None = None) -> Sparse2
     if not torch.all(nz_count == 2):
         raise ValueError("weight is not exact 2:4-compliant (expected exactly 2 nonzeros/group)")
 
-    idx = nz_mask.nonzero(as_tuple=False)
-    values = torch.empty((n, k // 4, 2), dtype=weight.dtype, device=weight.device)
-    indices = torch.empty((n, k // 4, 2), dtype=torch.int32, device=weight.device)
-
-    # idx rows are [row, group, pos_in_4], we fill 2 entries per [row, group].
-    cursor = torch.zeros((n, k // 4), dtype=torch.int64, device=weight.device)
-    for r, g, p in idx:
-        c = cursor[r, g].item()
-        values[r, g, c] = grouped[r, g, p]
-        indices[r, g, c] = p.to(torch.int32)
-        cursor[r, g] += 1
+    indices = nz_mask.to(torch.int32).argsort(dim=-1, descending=True)[..., :2]
+    indices, _ = torch.sort(indices, dim=-1)
+    values = torch.gather(grouped, dim=-1, index=indices.to(torch.int64))
 
     packed_bias = bias.contiguous() if bias is not None else None
     return Sparse2to4Pack(values.contiguous(), indices.contiguous(), packed_bias)
 
 
-def sparse_linear(input_2d: torch.Tensor, packed: Sparse2to4Pack, verbose_build: bool = False) -> torch.Tensor:
-    """Compute Y = X @ W^T + b using naive CUDA kernel.
+def sparse_linear(
+    input_2d: torch.Tensor,
+    packed: Sparse2to4Pack,
+    impl: str = "naive",
+    verbose_build: bool = False,
+) -> torch.Tensor:
+    """Compute Y = X @ W^T + b using custom CUDA kernel.
 
-    input_2d: [M, K]
-    packed.values/indices correspond to W [N, K]
-    returns: [M, N]
+    impl: "naive" | "optimized"
     """
     if not input_2d.is_cuda:
         raise ValueError("input_2d must be CUDA tensor")
     ext = load_extension(verbose=verbose_build)
     bias = packed.bias if packed.bias is not None else None
-    return ext.naive_sparse_linear(
+
+    if impl == "naive":
+        fn = ext.naive_sparse_linear
+    elif impl == "optimized":
+        fn = ext.optimized_sparse_linear
+    else:
+        raise ValueError(f"Unknown impl={impl}; expected 'naive' or 'optimized'")
+
+    return fn(
         input_2d.contiguous(),
         packed.values.contiguous(),
         packed.indices.contiguous(),
